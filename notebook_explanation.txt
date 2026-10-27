@@ -1,0 +1,491 @@
+ANALYSER.IPYNB - DETAILED CELL-BY-CELL EXPLANATION
+===================================================
+
+This notebook analyses survey data about trust and risk perceptions across
+Snapchat, Facebook and WhatsApp. It loads raw survey responses, cleans them,
+builds composite scores, and produces six charts. Below is a plain-English
+explanation of every cell.
+
+Note on question numbering: Question 9 is not present in the survey export.
+The numbering jumps from Q8 to Q10. This is intentional and reflected
+throughout the code.
+
+
+--------------------------------------------------------------------------------
+CELL 0 - Load the survey data
+--------------------------------------------------------------------------------
+
+    import pandas as pd
+
+    df = pd.read_csv("survey_responses.csv", encoding="latin-1")
+    print(f"Loaded {len(df)} responses, {len(df.columns)} columns")
+    df.head()
+
+What it does:
+    - Imports the pandas library, which is the main Python tool for working
+      with spreadsheet-like data (rows and columns).
+    - Reads the file "survey_responses.csv" into a variable called df (short
+      for "dataframe", which is just pandas' name for a table).
+    - encoding="latin-1" tells pandas how the text in the file is stored.
+      Some survey tools export with this encoding, and without specifying it
+      pandas might crash on special characters.
+    - Prints how many survey responses (rows) and how many questions (columns)
+      were loaded.
+    - df.head() shows the first 5 rows so you can visually check the data
+      loaded correctly.
+
+After this cell runs, df contains every survey response as a row, and every
+survey question as a column. The column names at this point are the full
+question text from the survey (very long and hard to work with).
+
+
+--------------------------------------------------------------------------------
+CELL 1 - Dummy-encode multi-select questions
+--------------------------------------------------------------------------------
+
+    def dummy_encode_multiselect(df, columns):
+        for col in columns:
+            dummies = df[col].astype(str).str.get_dummies(sep=";")
+            dummies.columns = [f"{col}_{opt.strip()}" for opt in dummies.columns]
+            df = pd.concat([df, dummies], axis=1).drop(columns=[col])
+        return df
+
+    df.columns = df.columns.str.strip()
+    multi_select_cols = [col for col in df.columns
+                         if df[col].astype(str).str.contains(";").any()]
+    df = dummy_encode_multiselect(df, multi_select_cols)
+    print(f"After dummy encoding: {len(df.columns)} columns")
+
+What it does:
+    Some survey questions let respondents pick more than one answer (e.g.
+    "Select all that apply"). In the CSV, these answers are stored in a
+    single cell separated by semicolons, like "Facebook;WhatsApp".
+
+    This cell splits those combined answers into separate yes/no columns.
+    For example, a column containing "Facebook;WhatsApp" becomes two new
+    columns:
+        - "..._Facebook" = 1
+        - "..._WhatsApp" = 1
+        - "..._Snapchat" = 0  (because the respondent did not pick it)
+
+    Step by step:
+    1. df.columns.str.strip() removes any accidental spaces around column
+       names.
+    2. It finds every column where at least one cell contains a semicolon -
+       these are the multi-select questions.
+    3. The dummy_encode_multiselect function loops through each of those
+       columns, splits the semicolon-separated values into individual 0/1
+       columns, attaches them to the dataframe, and removes the original
+       combined column.
+
+    This is necessary because you cannot do maths on text like
+    "Facebook;WhatsApp", but you can work with 0s and 1s.
+
+
+--------------------------------------------------------------------------------
+CELL 2 - Rename columns and drop unnecessary ones
+--------------------------------------------------------------------------------
+
+    rename_map = { ... }
+    df = df.rename(columns=rename_map)
+
+    drop_cols = [c for c in df.columns
+                 if c.startswith(("Id", "Start time", "Completion time",
+                                  "Email", "Name", "I confirm",
+                                  "I understand", "I agree"))]
+    df = df.drop(columns=drop_cols)
+
+What it does:
+    The raw column names from the survey are extremely long (full question
+    text). This cell replaces them with short codes that are easier to type
+    and read in code:
+
+    Survey question                                          Short code
+    ---------------------------------------------------------------
+    "What is your age range?"                             -> Q1_age
+    "What is your gender?"                                -> Q2_gender
+    "What is your academic background?"                   -> Q3_background
+    "How often do you use ... Snapchat"                   -> Q4_snapchat
+    "How often do you use ... Facebook"                   -> Q4_facebook
+    "How often do you use ... WhatsApp"                   -> Q4_whatsapp
+    "Were you aware ... location data"                    -> Q5_location_aware
+    "... hardest to report ... Facebook"                  -> Q6_facebook
+    "... hardest to report ... Snapchat"                  -> Q6_snapchat
+    (and so on for Q6, Q7, Q8, Q10, Q11, Q12, Q13, Q14, Q15)
+
+    The pattern is: Q[number]_[detail]
+
+    It also drops columns that are not survey answers:
+        - Id, Start time, Completion time, Email, Name (metadata from the
+          survey tool)
+        - All consent confirmation columns ("I confirm...", "I understand...",
+          "I agree...") since everyone agreed (otherwise they would not have
+          completed the survey)
+
+
+--------------------------------------------------------------------------------
+CELL 3 - Convert Likert text responses to numbers
+--------------------------------------------------------------------------------
+
+    likert_map = {
+        "Never": 1, "Rarely": 2, "Sometimes": 3, "Often": 4, "Always": 5,
+        "Not confident at all": 1, "Not very confident": 2, "Neutral": 3,
+        "Confident": 4, "Very confident": 5,
+        "Not safe at all": 1, "Not very safe": 2, "Safe": 4, "Very safe": 5,
+        "Every day": 5, "Few times a week": 4, "Once a week or less": 3,
+        "Yes, I was aware of this": 1, "No, I was not aware of this": 0,
+    }
+
+    for col in likert_cols:
+        df[col] = df[col].map(likert_map)
+
+What it does:
+    Many survey questions use a "Likert scale" - a range of text options from
+    low to high (e.g. "Never" to "Always", or "Not safe at all" to
+    "Very safe"). To do any maths or comparisons, these text answers need to
+    become numbers.
+
+    The likert_map dictionary defines the conversion:
+        "Never"             -> 1  (lowest)
+        "Rarely"            -> 2
+        "Sometimes"         -> 3
+        "Often"             -> 4
+        "Always"            -> 5  (highest)
+
+    Similar scales exist for confidence (1-5), safety (1-5), and frequency
+    of platform use (1-5). Location awareness is binary: aware = 1, not
+    aware = 0.
+
+    The code loops through every Likert column (Q4, Q5, Q7, Q11, Q12, Q13)
+    and replaces the text with the corresponding number using .map().
+
+    After this cell, every value in these columns is a number, which means
+    we can calculate averages, differences, and correlations.
+
+
+--------------------------------------------------------------------------------
+CELL 4 - Compute composite scores
+--------------------------------------------------------------------------------
+
+    df["platform_awareness_score"] = ( ... ) / 4
+    df["privacy_behaviour_score"] = ( ... ) / 6
+    df["vulnerability_exposure_score"] = ( ... ) / 6
+    df["trust_risk_gap_snapchat"] = df["Q12_snapchat"] - df["Q13_snapchat"]
+    ...
+    df["trust_risk_gap_mean"] = ( ... ) / 3
+    df["platform_comparison_score"] = ( ... ) / 8
+
+What it does:
+    Individual question scores are useful, but to see bigger patterns we
+    combine related questions into "composite scores". Each composite score
+    is the average of several related questions, giving one number that
+    summarises a broader concept.
+
+    The five composite scores are:
+
+    1. Platform Awareness Score (average of Q5 + Q7)
+       How aware the user is of platform risks. Combines:
+       - Q5: whether they knew platforms share location data (0 or 1)
+       - Q7: confidence in recognising grooming on each platform (1-5)
+       A higher score means more awareness.
+
+    2. Privacy Behaviour Score (average of Q11 + Q13)
+       How actively the user manages their privacy. Combines:
+       - Q11: how often they review privacy settings (1-5 per platform)
+       - Q13: how often they accept stranger requests (1-5 per platform)
+       A higher score means more active privacy management (but note that
+       a high Q13 means they accept strangers MORE often, which is risky).
+
+    3. Vulnerability Exposure Score (average of Q10 + Q13)
+       How exposed the user is to risk. Combines:
+       - Q10: whether they have received uncomfortable messages (0 or 1
+         per platform)
+       - Q13: how often they accept stranger requests (1-5 per platform)
+       A higher score means greater exposure to risk.
+
+    4. Trust-Risk Gap Score (Q12 minus Q13, per platform and overall mean)
+       The core metric of the project. For each platform, this subtracts
+       the stranger contact frequency (Q13, a risk behaviour) from the
+       perceived safety score (Q12, a trust feeling).
+
+       Example: if someone feels "Safe" on Snapchat (Q12 = 4) but "Often"
+       accepts strangers (Q13 = 4), the gap is 0 - they behave as
+       cautiously as they feel safe.
+
+       But if they feel "Safe" (4) yet "Rarely" accept strangers (2), the
+       gap is +2 - they are more trusting than their behaviour suggests.
+
+       A large positive gap means the user trusts the platform much more
+       than their actual behaviour would warrant, which is the "trust-risk
+       gap" the project investigates.
+
+       trust_risk_gap_mean is the average of the three per-platform gaps.
+
+    5. Platform Comparison Score (average of Q6 + Q8 + Q14)
+       How respondents compare platforms against each other. Combines:
+       - Q6: which platform is hardest to report abuse on (0 or 1)
+       - Q8: which platform is most likely for grooming (0 or 1)
+       - Q14: which platform offers best protection (0 or 1)
+       A higher score means more respondents flagged that platform.
+
+    .describe() at the end prints summary statistics (count, mean, std,
+    min, max, etc.) for all five composite scores.
+
+
+--------------------------------------------------------------------------------
+CELL 5 - Visualiser section header (markdown)
+--------------------------------------------------------------------------------
+
+    ## Visualiser
+    Charts for the trust-risk gap analysis across Snapchat, Facebook
+    and WhatsApp.
+
+What it does:
+    This is just a text heading cell that separates the data processing
+    section from the visualisation section. It does not run any code.
+
+
+--------------------------------------------------------------------------------
+CELL 6 - Visualiser setup (imports, constants, helper function)
+--------------------------------------------------------------------------------
+
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
+    import seaborn as sns
+    import numpy as np
+
+    PLATFORM_GAP_COLS = { ... }
+    COMPOSITE_COLS = [ ... ]
+    COMPOSITE_LABELS = { ... }
+    PALETTE = { ... }
+    TECH_PALETTE = { ... }
+
+    def bar_label(ax, bars, fmt="{:.2f}"): ...
+
+    tech_labels = {"Computer Science", "IT", "Cyber Security"}
+    df["_tech_group"] = df["Q3_background"].apply(...)
+
+What it does:
+    Sets up everything the chart cells need:
+
+    Library imports:
+    - matplotlib is the main Python charting library. pyplot (plt) provides
+      the plotting functions. ticker (mticker) controls number formatting on
+      axes.
+    - seaborn (sns) is built on top of matplotlib and makes heatmaps and
+      statistical plots easier.
+    - numpy (np) provides fast maths operations (e.g. np.arange for
+      generating evenly spaced bar positions).
+
+    Constants:
+    - PLATFORM_GAP_COLS maps platform names to their trust-risk gap column
+      names, so charts can loop over platforms easily.
+    - COMPOSITE_COLS lists the five composite score column names.
+    - COMPOSITE_LABELS maps column names to short, readable labels with line
+      breaks for chart axes (e.g. "Platform\nAwareness" prints on two lines).
+    - PALETTE assigns brand colours to each platform (Snapchat yellow,
+      Facebook blue, WhatsApp green).
+    - TECH_PALETTE assigns colours for the technical vs non-technical
+      comparison.
+
+    Helper function:
+    - bar_label() adds the numeric value above each bar in a bar chart.
+      It loops through every bar, reads its height, and places a text label
+      just above it. This makes charts easier to read.
+
+    Background classification:
+    - Creates a new column "_tech_group" that labels each respondent as
+      "Technical" or "Non-Technical" based on their Q3_background answer.
+    - If their background contains "Computer Science", "IT", or
+      "Cyber Security" (case-insensitive), they are "Technical".
+    - Everyone else is "Non-Technical".
+    - Prints the count of each group.
+
+
+--------------------------------------------------------------------------------
+CELL 7 - Chart 1: Mean trust-risk gap by platform
+--------------------------------------------------------------------------------
+
+What it does:
+    Creates a bar chart with three bars - one for Snapchat, Facebook, and
+    WhatsApp - showing the average trust-risk gap score for each platform.
+
+    Key details:
+    - Each bar's height is the mean (average) of that platform's trust-risk
+      gap across all respondents.
+    - Error bars show the standard error of the mean (SEM), which indicates
+      how confident we can be in the average. Shorter error bars mean more
+      confidence. SEM is calculated as standard deviation divided by the
+      square root of the sample size.
+    - Bars are coloured with each platform's brand colour.
+    - A dashed grey line at y=0 shows the baseline (no gap).
+    - The chart is saved as "chart1_trust_risk_gap_by_platform.png" at
+      150 DPI (high quality for reports).
+
+    What to look for:
+    - Which platform has the largest gap? That is where users' trust most
+      exceeds their caution.
+    - Do error bars overlap between platforms? If they do, the difference
+      may not be statistically meaningful with this sample size.
+
+
+--------------------------------------------------------------------------------
+CELL 8 - Chart 2: Correlation heatmap
+--------------------------------------------------------------------------------
+
+What it does:
+    Creates a triangular heatmap showing how strongly each pair of composite
+    scores is related (correlated).
+
+    Key details:
+    - A correlation ranges from -1 to +1:
+        +1 = perfect positive relationship (when one goes up, the other
+             always goes up)
+         0 = no relationship
+        -1 = perfect negative relationship (when one goes up, the other
+             always goes down)
+    - The heatmap uses the "coolwarm" colour scheme: red/warm = positive
+      correlation, blue/cool = negative correlation, white = near zero.
+    - Only the lower triangle is shown (the upper triangle is a mirror
+      image, so hiding it removes redundancy).
+    - Each cell displays the correlation value to two decimal places.
+    - df[available].corr() computes the Pearson correlation coefficient
+      between every pair of composite scores.
+
+    What to look for:
+    - Strong positive correlations (close to +1) between scores suggest
+      those concepts move together in your respondents.
+    - Negative correlations would mean as one increases the other decreases.
+    - Very low correlations (near 0) suggest the scores measure independent
+      things, which is good for having distinct composite scores.
+
+
+--------------------------------------------------------------------------------
+CELL 9 - Chart 3: Composite scores by technical vs non-technical background
+--------------------------------------------------------------------------------
+
+What it does:
+    Creates a grouped bar chart comparing all five composite scores between
+    users with a technical background (Computer Science, IT, Cyber Security)
+    and those without.
+
+    Key details:
+    - For each composite score, there are two bars side by side: one for
+      Technical users (blue) and one for Non-Technical users (red).
+    - Heights are group means, error bars are SEM.
+    - The group sizes (n) are printed below the chart so you know how many
+      people are in each group.
+
+    What to look for:
+    - Do technical users have higher platform awareness? You might expect
+      them to, given their training.
+    - Is the trust-risk gap larger or smaller for technical users?
+    - Do non-technical users show higher vulnerability exposure?
+
+
+--------------------------------------------------------------------------------
+CELL 10 - Chart 4: Perceived safety vs stranger contact by platform
+--------------------------------------------------------------------------------
+
+What it does:
+    Creates a side-by-side bar chart comparing the raw Q12 and Q13 scores
+    for each platform, BEFORE they are combined into the trust-risk gap
+    composite.
+
+    Key details:
+    - Blue bars = Q12 (perceived safety / trust): "How safe do you feel
+      using this platform?"
+    - Red bars = Q13 (stranger contact / risk): "How often do you accept
+      requests from people you don't know?"
+    - The visual gap between the blue and red bars for each platform IS
+      the trust-risk gap in its raw form.
+
+    What to look for:
+    - This chart makes it clear WHERE the trust-risk gap comes from. If
+      the blue bar is much taller than the red bar, users feel safe but
+      are not engaging in risky behaviour (positive gap). If they are
+      similar, users' caution matches their trust level.
+    - Compare across platforms: does one platform have a bigger visual
+      gap than others?
+
+
+--------------------------------------------------------------------------------
+CELL 11 - Chart 5: Composite scores by gender
+--------------------------------------------------------------------------------
+
+What it does:
+    Creates a grouped bar chart comparing all five composite scores between
+    Male and Female respondents.
+
+    Key details:
+    - Same layout as Chart 3 (technical vs non-technical), but grouped by
+      gender instead.
+    - Male bars are steel blue, Female bars are soft red.
+    - Group sizes are printed (Male: 13, Female: 8 in this dataset).
+
+    What to look for:
+    - Are there noticeable differences in awareness, privacy behaviour, or
+      the trust-risk gap between genders?
+    - With relatively small group sizes, large error bars indicate you
+      should be cautious about drawing strong conclusions.
+
+
+--------------------------------------------------------------------------------
+CELL 12 - Chart 6: Composite scores by age band
+--------------------------------------------------------------------------------
+
+What it does:
+    Creates a grouped bar chart comparing all five composite scores across
+    three age bands: 18-20, 21-23, and 24+.
+
+    Key details:
+    - The original five age groups (18-20, 21-23, 24-26, 27-30, 30+) are
+      merged into three bands because the older groups had very few
+      respondents (27-30 had 1 person, 30+ had 2). Merging them into "24+"
+      gives a group of 9, which is more statistically meaningful.
+    - Three bars per composite score: green (18-20), amber (21-23),
+      dark red (24+).
+    - Group sizes: 18-20 (n=4), 21-23 (n=8), 24+ (n=9).
+
+    What to look for:
+    - Does awareness or privacy behaviour change with age?
+    - Is the trust-risk gap larger for younger users who may have less
+      experience with online safety?
+    - The 18-20 group is small (n=4), so its error bars will be wide.
+      Patterns are suggestive rather than conclusive at this sample size.
+
+
+================================================================================
+SUMMARY OF THE PIPELINE
+================================================================================
+
+The notebook follows a linear pipeline:
+
+    Raw CSV
+      |
+      v
+    [Cell 0] Load data into a pandas dataframe
+      |
+      v
+    [Cell 1] Split multi-select answers into individual 0/1 columns
+      |
+      v
+    [Cell 2] Rename all columns to short Q-codes, drop admin columns
+      |
+      v
+    [Cell 3] Convert text Likert responses ("Never"..."Always") to numbers
+      |
+      v
+    [Cell 4] Calculate five composite scores from the numeric data
+      |
+      v
+    [Cells 6-12] Produce six visualisations:
+        Chart 1 - Trust-risk gap by platform
+        Chart 2 - Correlation heatmap of composite scores
+        Chart 3 - Composite scores: technical vs non-technical
+        Chart 4 - Raw safety vs stranger contact by platform
+        Chart 5 - Composite scores by gender
+        Chart 6 - Composite scores by age band
+
+Each cell must be run in order (top to bottom) because later cells depend
+on variables and transformations from earlier cells.
